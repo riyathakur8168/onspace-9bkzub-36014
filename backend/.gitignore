@@ -1,0 +1,21 @@
+# Environment Variables (Secrets)
+.env
+.env.*
+!.env.example
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Testing & Scratch
+scratch/
+.pytest_cache/
+.coverage
+htmlcov/

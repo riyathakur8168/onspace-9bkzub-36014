@@ -1,0 +1,28 @@
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Environment Files (Secrets)
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Python & Virtual Environments
+__pycache__/
+*.py[cod]
+.venv/
+backend/.venv/
+backend/__pycache__/
+
+# Node & Expo
+node_modules/
+phase 1/node_modules/
+.expo/
+phase 1/.expo/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
