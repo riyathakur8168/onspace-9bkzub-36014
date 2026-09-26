@@ -1,0 +1,7 @@
+allowBuilds:
+  '@shopify/react-native-skia': set this to true or false
+  protobufjs: false
+  react-native-elements: false
+  unrs-resolver: false
+minimumReleaseAgeExclude:
+  - expo-calendar@57.0.4
