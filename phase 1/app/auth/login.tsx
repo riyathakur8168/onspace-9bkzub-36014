@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Colors, Spacing, Typography, Radius, Shadow } from '@/constants/theme';
 import { useApp } from '@/hooks/useApp';
+import { authApi } from '@/services/api';
 import { Role, ROLES } from '@/constants/config';
 import {
   validatePhone,
@@ -24,7 +25,7 @@ export default function LoginScreen() {
   const router = useRouter();
   const searchParams = useLocalSearchParams<{ mode?: string }>();
   const insets = useSafeAreaInsets();
-  const { registerWithPassword, loginWithPassword, sendOTP, verifyOTP, pendingOTP, login } = useApp();
+  const { registerWithPassword, loginWithPassword, login } = useApp();
 
   const [mode, setMode] = useState<'login' | 'signup'>(
     searchParams.mode === 'signup' ? 'signup' : 'login'
@@ -40,21 +41,28 @@ export default function LoginScreen() {
   const [fullName, setFullName] = useState('');
   const [signupEmail, setSignupEmail] = useState('');
   const [phone, setPhone] = useState('');
+  const [aadhaarNumber, setAadhaarNumber] = useState('');
   const [signupPassword, setSignupPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('Bengaluru');
   const [pincode, setPincode] = useState('');
 
-  // Inline Phone Verification State
-  const [showOtpDrawer, setShowOtpDrawer] = useState(false);
+  // Shared Verification Session State
+  const [sessionId, setSessionId] = useState<string | null>(null);
+
+  // Toast Notification State
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastType, setToastType] = useState<'error' | 'success'>('error');
+
+  // 1. Normal Phone OTP Verification State
   const [phoneVerified, setPhoneVerified] = useState(false);
-  const [digits, setDigits] = useState<string[]>(['', '', '', '', '', '']);
-  const inputRefs = useRef<Array<TextInput | null>>([]);
-  const [cooldown, setCooldown] = useState(0);
-  const [otpLoading, setOtpLoading] = useState(false);
-  const [otpError, setOtpError] = useState<string | null>(null);
-  const [otpSuccess, setOtpSuccess] = useState<string | null>(null);
+  const [phoneOtpSent, setPhoneOtpSent] = useState(false);
+  const [phoneDigits, setPhoneDigits] = useState<string[]>(['', '', '', '', '', '']);
+  const phoneInputRefs = useRef<Array<TextInput | null>>([]);
+  const [phoneCooldown, setPhoneCooldown] = useState(0);
+  const [phoneLoading, setPhoneLoading] = useState(false);
+  const [phoneError, setPhoneError] = useState<string | null>(null);
 
   // Touch / Blur tracking for inline field errors
   const [touched, setTouched] = useState<Record<string, boolean>>({});
@@ -72,25 +80,40 @@ export default function LoginScreen() {
     }
   }, [searchParams.mode]);
 
-  // Resend cooldown timer
+  // Resend cooldown timer for Mobile Phone OTP
   useEffect(() => {
-    if (cooldown <= 0) return;
+    if (phoneCooldown <= 0) return;
     const timer = setInterval(() => {
-      setCooldown(prev => prev - 1);
+      setPhoneCooldown(prev => prev - 1);
     }, 1000);
     return () => clearInterval(timer);
-  }, [cooldown]);
+  }, [phoneCooldown]);
 
-  // Handler for phone number edits -> invalidates previous OTP verification
+  const showToast = (message: string, type: 'error' | 'success' = 'error') => {
+    setToastMessage(message);
+    setToastType(type);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 4000);
+  };
+
+  const handleAadhaarChange = (text: string) => {
+    const cleaned = text.replace(/[^0-9]/g, '').slice(0, 12);
+    setAadhaarNumber(cleaned);
+  };
+
+  const handleSignupEmailChange = (text: string) => {
+    setSignupEmail(text);
+  };
+
   const handlePhoneChange = (text: string) => {
     const cleaned = text.replace(/[^0-9]/g, '').slice(0, 10);
     setPhone(cleaned);
-    if (phoneVerified || showOtpDrawer) {
+    if (phoneVerified || phoneOtpSent) {
       setPhoneVerified(false);
-      setShowOtpDrawer(false);
-      setOtpSuccess(null);
-      setOtpError(null);
-      setDigits(['', '', '', '', '', '']);
+      setPhoneOtpSent(false);
+      setPhoneDigits(['', '', '', '', '', '']);
+      setPhoneError(null);
     }
   };
 
@@ -109,72 +132,88 @@ export default function LoginScreen() {
   const cityVal = validateCity(city);
   const pincodeVal = validatePincode(pincode);
 
-  // Inline OTP Handlers
-  const handleRequestOTP = async () => {
-    if (!phoneValidation.isValid) {
-      setOtpError(phoneValidation.error || 'Please enter a valid 10-digit Indian mobile number.');
+  // Normal Phone OTP Handlers
+  const handleRequestPhoneOTP = async () => {
+    if (phoneLoading) return;
+    const cleaned = phone.replace(/[^0-9]/g, '');
+    if (cleaned.length !== 10) {
+      setPhoneError('Please enter a valid 10-digit mobile phone number.');
+      showToast('Please enter a valid 10-digit mobile phone number.', 'error');
       return;
     }
 
-    setOtpLoading(true);
-    setOtpError(null);
-    setOtpSuccess(null);
+    setPhoneLoading(true);
+    setPhoneError(null);
+    try {
+      const res = await authApi.requestPhoneOtp(cleaned, sessionId || undefined);
+      if (res.error) {
+        setPhoneError(res.error);
+        showToast(res.error, 'error');
+        return;
+      }
 
-    const res = await sendOTP(phone);
-    setOtpLoading(false);
-
-    if (!res.success) {
-      setOtpError(res.error || 'Failed to send OTP. Please try again.');
-      return;
+      if (res.data) {
+        setSessionId(res.data.session_id);
+        setPhoneOtpSent(true);
+        setPhoneCooldown(30);
+        showToast(res.data.message || 'OTP sent to your mobile phone number.', 'success');
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || 'Unable to send OTP. Please try again.';
+      setPhoneError(errMsg);
+      showToast(errMsg, 'error');
+    } finally {
+      setPhoneLoading(false);
     }
-
-    setShowOtpDrawer(true);
-    setCooldown(30);
-    setOtpSuccess(`6-digit code sent to +91 ${phone}`);
   };
 
-  const handleDigitChange = (text: string, index: number) => {
-    setOtpError(null);
+  const handlePhoneDigitChange = (text: string, index: number) => {
+    setPhoneError(null);
     const cleaned = text.replace(/[^0-9]/g, '');
-    const newDigits = [...digits];
+    const newDigits = [...phoneDigits];
     newDigits[index] = cleaned;
-    setDigits(newDigits);
+    setPhoneDigits(newDigits);
 
     if (cleaned && index < 5) {
-      inputRefs.current[index + 1]?.focus();
+      phoneInputRefs.current[index + 1]?.focus();
     }
 
     if (newDigits.every(d => d.length === 1) && index === 5) {
-      handleVerifyInlineOTP(newDigits.join(''));
+      handleVerifyPhoneOTP(newDigits.join(''));
     }
   };
 
-  const handleKeyPress = (e: any, index: number) => {
-    if (e.nativeEvent.key === 'Backspace' && !digits[index] && index > 0) {
-      inputRefs.current[index - 1]?.focus();
-    }
-  };
-
-  const handleVerifyInlineOTP = async (codeString?: string) => {
-    const code = codeString || digits.join('');
+  const handleVerifyPhoneOTP = async (codeString?: string) => {
+    if (phoneLoading) return;
+    const code = codeString || phoneDigits.join('');
     if (code.length < 6) {
-      setOtpError('Please enter the 6-digit code.');
+      const errMsg = 'Wrong OTP. Please enter the correct OTP.';
+      setPhoneError(errMsg);
+      showToast(errMsg, 'error');
       return;
     }
 
-    setOtpLoading(true);
-    setOtpError(null);
-    const res = await verifyOTP(code, phone);
-    setOtpLoading(false);
+    setPhoneLoading(true);
+    setPhoneError(null);
+    try {
+      const res = await authApi.verifyPhoneOtp(sessionId || '', phone.replace(/\D/g, ''), code);
+      if (res.error || !res.data?.success) {
+        const errMsg = res.error || 'Wrong OTP. Please enter the correct OTP.';
+        setPhoneError(errMsg);
+        showToast(errMsg, 'error');
+        return;
+      }
 
-    if (!res.success) {
-      setOtpError(res.error || 'Invalid verification code.');
-      return;
+      setPhoneVerified(true);
+      setPhoneOtpSent(false);
+      showToast('✓ Mobile phone number verified successfully!', 'success');
+    } catch (err: any) {
+      const errMsg = err?.message || 'Wrong OTP. Please enter the correct OTP.';
+      setPhoneError(errMsg);
+      showToast(errMsg, 'error');
+    } finally {
+      setPhoneLoading(false);
     }
-
-    setPhoneVerified(true);
-    setShowOtpDrawer(false);
-    setOtpSuccess('Phone number verified successfully!');
   };
 
   // Submit Handler for Signup
@@ -182,11 +221,11 @@ export default function LoginScreen() {
     setFormError(null);
     setFormSuccess(null);
 
-    // Touch all fields to show any missing errors
     setTouched({
       name: true,
       email: true,
       phone: true,
+      aadhaar: true,
       password: true,
       confirmPassword: true,
       address: true,
@@ -195,9 +234,19 @@ export default function LoginScreen() {
     });
 
     if (!nameVal.isValid) { setFormError(nameVal.error!); return; }
-    if (!signupEmailVal.isValid) { setFormError(signupEmailVal.error!); return; }
+    if (aadhaarNumber.replace(/\D/g, '').length !== 12) {
+      setFormError('Please enter a valid 12-digit Aadhaar number.');
+      showToast('Please enter a valid 12-digit Aadhaar number.', 'error');
+      return;
+    }
     if (!phoneValidation.isValid) { setFormError(phoneValidation.error!); return; }
-    if (!phoneVerified) { setFormError('Please verify your mobile phone number with OTP first.'); return; }
+    if (!phoneVerified) {
+      const msg = 'Please verify your mobile phone number via OTP first.';
+      setFormError(msg);
+      showToast(msg, 'error');
+      return;
+    }
+    if (!signupEmailVal.isValid) { setFormError(signupEmailVal.error!); return; }
     if (!passStrength.isValid) { setFormError('Password must be at least 8 characters and contain uppercase letters, lowercase letters, numbers, and special characters.'); return; }
     if (!confirmVal.isValid) { setFormError(confirmVal.error!); return; }
     if (!addressVal.isValid) { setFormError(addressVal.error!); return; }
@@ -214,7 +263,8 @@ export default function LoginScreen() {
       address.trim(),
       city.trim(),
       pincode.trim(),
-      phoneVerified
+      sessionId || undefined,
+      aadhaarNumber.replace(/\D/g, '')
     );
     setLoading(false);
 
@@ -248,18 +298,21 @@ export default function LoginScreen() {
     setLoading(false);
 
     if (!res.success) {
-      setFormError(res.error || 'Login failed. Please check your credentials.');
+      setFormError(res.error || 'Login failed. Please check credentials.');
       return;
     }
 
-    const userRole = (res as any).role || (res as any).user?.role;
-    if (userRole === ROLES.WORKER) {
-      router.replace('/(worker)');
-    } else if (userRole === ROLES.ADMIN) {
-      router.replace('/(admin)');
-    } else {
-      router.replace('/(customer)');
-    }
+    setFormSuccess('Login successful! Redirecting...');
+    setTimeout(() => {
+      const userRole = res.role || selectedRole;
+      if (userRole === ROLES.ADMIN) {
+        router.replace('/(admin)/workers');
+      } else if (userRole === ROLES.WORKER) {
+        router.replace('/(worker)');
+      } else {
+        router.replace('/(customer)');
+      }
+    }, 600);
   };
 
   return (
@@ -268,24 +321,36 @@ export default function LoginScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <StatusBar barStyle="dark-content" backgroundColor={Colors.background} />
+
+      {/* TOP TOAST POPUP OVERLAY */}
+      {toastMessage && (
+        <View style={[styles.toastContainer, { top: insets.top + 8 }]}>
+          <View style={[styles.toastContent, toastType === 'error' ? styles.toastError : styles.toastSuccess]}>
+            <MaterialIcons
+              name={toastType === 'error' ? 'error-outline' : 'check-circle-outline'}
+              size={20}
+              color="#ffffff"
+            />
+            <Text style={styles.toastText}>{toastMessage}</Text>
+          </View>
+        </View>
+      )}
+
       <ScrollView
         contentContainerStyle={[
-          styles.container,
-          { paddingTop: insets.top + Spacing[4], paddingBottom: insets.bottom + Spacing[8] }
+          styles.scrollContent,
+          { paddingTop: insets.top + Spacing[4], paddingBottom: insets.bottom + Spacing[6] }
         ]}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         {/* Header Branding */}
-        <View style={styles.brandHeader}>
+        <View style={styles.header}>
           <View style={styles.logoBadge}>
-            <MaterialIcons name="handshake" size={28} color="#ffffff" />
+            <MaterialIcons name="handshake" size={28} color={Colors.primary} />
           </View>
-          <Text style={styles.brandTitle}>OnePlace</Text>
-          <Text style={styles.brandSubtitle}>
-            {mode === 'login'
-              ? 'Welcome back to your service community'
-              : 'Join OnePlace for fair & verified local services'}
-          </Text>
+          <Text style={styles.appName}>OnePlace</Text>
+          <Text style={styles.appTagline}>Cooperative Services Platform</Text>
         </View>
 
         {/* Auth Mode Toggle */}
@@ -377,7 +442,7 @@ export default function LoginScreen() {
 
             {/* Full Name */}
             <View style={styles.fieldGroup}>
-              <Text style={styles.fieldLabel}>Full Name</Text>
+              <Text style={styles.fieldLabel}>Full Name *</Text>
               <View style={[styles.inputWrapper, touched.name && !nameVal.isValid && styles.inputWrapperError]}>
                 <MaterialIcons name="person" size={20} color={Colors.textTertiary} style={styles.inputIcon} />
                 <TextInput
@@ -394,44 +459,10 @@ export default function LoginScreen() {
               )}
             </View>
 
-            {/* Email Address */}
+            {/* Contact Mobile Phone Number */}
             <View style={styles.fieldGroup}>
-              <Text style={styles.fieldLabel}>Email Address</Text>
-              <View style={[styles.inputWrapper, touched.email && !signupEmailVal.isValid && styles.inputWrapperError]}>
-                <MaterialIcons name="email" size={20} color={Colors.textTertiary} style={styles.inputIcon} />
-                <TextInput
-                  style={styles.input}
-                  placeholder="name@example.com"
-                  placeholderTextColor={Colors.textTertiary}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  value={signupEmail}
-                  onChangeText={setSignupEmail}
-                  onBlur={() => setTouched(prev => ({ ...prev, email: true }))}
-                />
-              </View>
-              {touched.email && !signupEmailVal.isValid && (
-                <Text style={styles.inlineErrorText}>{signupEmailVal.error}</Text>
-              )}
-            </View>
-
-            {/* Mobile Phone Number with Inline OTP Verification */}
-            <View style={styles.fieldGroup}>
-              <View style={styles.labelRow}>
-                <Text style={styles.fieldLabel}>Mobile Phone Number (10 Digits)</Text>
-                {phoneVerified && (
-                  <View style={styles.verifiedBadge}>
-                    <MaterialIcons name="check-circle" size={14} color={Colors.success} />
-                    <Text style={styles.verifiedBadgeText}>Phone Verified</Text>
-                  </View>
-                )}
-              </View>
-
-              <View style={[
-                styles.phoneInputRow,
-                touched.phone && !phoneValidation.isValid && styles.inputWrapperError,
-                phoneVerified && styles.phoneInputRowVerified
-              ]}>
+              <Text style={styles.fieldLabel}>Contact Mobile Phone Number (10 Digits) *</Text>
+              <View style={[styles.phoneInputRow, touched.phone && !phoneValidation.isValid && styles.inputWrapperError]}>
                 <Text style={styles.countryCode}>+91</Text>
                 <TextInput
                   style={styles.phoneInput}
@@ -443,96 +474,145 @@ export default function LoginScreen() {
                   onChangeText={handlePhoneChange}
                   onBlur={() => setTouched(prev => ({ ...prev, phone: true }))}
                 />
-                {!phoneVerified && (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.verifyPhoneBtn,
-                      (!phoneValidation.isValid || otpLoading) && styles.verifyPhoneBtnDisabled,
-                      pressed && { opacity: 0.8 }
-                    ]}
-                    onPress={handleRequestOTP}
-                    disabled={!phoneValidation.isValid || otpLoading}
-                  >
-                    {otpLoading ? (
-                      <ActivityIndicator size="small" color="#ffffff" />
-                    ) : (
-                      <Text style={styles.verifyPhoneBtnText}>Verify</Text>
-                    )}
-                  </Pressable>
-                )}
               </View>
-
               {touched.phone && !phoneValidation.isValid && (
                 <Text style={styles.inlineErrorText}>{phoneValidation.error}</Text>
               )}
+            </View>
 
-              {/* Inline OTP Section */}
-              {showOtpDrawer && !phoneVerified && (
-                <View style={styles.inlineOtpDrawer}>
-                  <View style={styles.otpHeaderRow}>
-                    <MaterialIcons name="shield" size={18} color={Colors.primary} />
-                    <Text style={styles.otpDrawerTitle}>Enter 6-Digit Verification Code</Text>
-                  </View>
-                  <Text style={styles.otpDrawerSub}>
-                    Sent to +91 {phone}. <Text style={{ fontWeight: Typography.bold, color: Colors.accentDark }}>Demo Code: {pendingOTP || '123456'}</Text>
-                  </Text>
+            {/* Aadhaar Number Field */}
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>Aadhaar Number *</Text>
+              <View style={[styles.inputWrapper, touched.aadhaar && aadhaarNumber.replace(/\D/g, '').length !== 12 && styles.inputWrapperError]}>
+                <MaterialIcons name="fingerprint" size={20} color={Colors.textTertiary} style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="12-digit Aadhaar number"
+                  placeholderTextColor={Colors.textTertiary}
+                  keyboardType="number-pad"
+                  maxLength={12}
+                  value={aadhaarNumber}
+                  onChangeText={handleAadhaarChange}
+                  onBlur={() => setTouched(prev => ({ ...prev, aadhaar: true }))}
+                />
+              </View>
+              <Text style={{ fontSize: 11, color: Colors.textTertiary, marginTop: 2 }}>
+                Used for identification records. No Aadhaar OTP required.
+              </Text>
+            </View>
 
-                  {otpError && (
-                    <Text style={styles.inlineErrorText}>{otpError}</Text>
-                  )}
-                  {otpSuccess && (
-                    <Text style={styles.inlineSuccessText}>{otpSuccess}</Text>
-                  )}
-
-                  <View style={styles.otpGrid}>
-                    {digits.map((digit, i) => (
-                      <TextInput
-                        key={i}
-                        ref={ref => { inputRefs.current[i] = ref; }}
-                        style={[
-                          styles.otpInput,
-                          digit ? styles.otpInputFilled : null,
-                        ]}
-                        keyboardType="number-pad"
-                        maxLength={1}
-                        value={digit}
-                        onChangeText={text => handleDigitChange(text, i)}
-                        onKeyPress={e => handleKeyPress(e, i)}
-                        autoFocus={i === 0}
-                        selectTextOnFocus
-                      />
-                    ))}
-                  </View>
-
-                  <View style={styles.otpActionRow}>
-                    <Pressable
-                      style={[styles.verifyOtpBtn, digits.join('').length < 6 && styles.btnDisabled]}
-                      onPress={() => handleVerifyInlineOTP()}
-                      disabled={digits.join('').length < 6 || otpLoading}
-                    >
-                      {otpLoading ? (
-                        <ActivityIndicator size="small" color="#ffffff" />
-                      ) : (
-                        <Text style={styles.verifyOtpBtnText}>Verify OTP Code</Text>
-                      )}
-                    </Pressable>
-
-                    <Pressable
-                      onPress={handleRequestOTP}
-                      disabled={cooldown > 0 || otpLoading}
-                    >
-                      <Text style={[styles.resendText, cooldown > 0 && styles.resendDisabled]}>
-                        {cooldown > 0 ? `Resend (${cooldown}s)` : 'Resend Code'}
-                      </Text>
-                    </Pressable>
-                  </View>
-                </View>
+            {/* Email Address */}
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>Email *</Text>
+              <View style={[styles.inputWrapper, touched.email && !signupEmailVal.isValid && styles.inputWrapperError]}>
+                <MaterialIcons name="email" size={20} color={Colors.textTertiary} style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="name@example.com"
+                  placeholderTextColor={Colors.textTertiary}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  value={signupEmail}
+                  onChangeText={handleSignupEmailChange}
+                  onBlur={() => setTouched(prev => ({ ...prev, email: true }))}
+                />
+              </View>
+              {touched.email && !signupEmailVal.isValid && (
+                <Text style={styles.inlineErrorText}>{signupEmailVal.error}</Text>
               )}
             </View>
 
-            {/* Password Creation with Real-time Checklist */}
+            {/* ================================================== */}
+            {/* MOBILE PHONE OTP VERIFICATION CARD */}
+            {/* ================================================== */}
+            <View style={{ marginVertical: Spacing[2] }}>
+              <View style={styles.verificationCard}>
+                <View style={styles.verifCardHeader}>
+                  <MaterialIcons name="phone-android" size={20} color={Colors.primary} />
+                  <Text style={styles.verifCardTitle}>Mobile Phone Verification *</Text>
+                  <View style={[styles.statusPill, phoneVerified ? styles.pillSuccess : styles.pillWarning]}>
+                    <Text style={[styles.statusPillText, phoneVerified ? styles.pillTextSuccess : styles.pillTextWarning]}>
+                      {phoneVerified ? 'VERIFIED' : 'PENDING'}
+                    </Text>
+                  </View>
+                </View>
+
+                {phoneVerified ? (
+                  <View style={styles.verifiedStateBox}>
+                    <MaterialIcons name="check-circle" size={20} color="#047857" />
+                    <Text style={styles.verifiedStateText}>✓ Mobile phone number verified successfully.</Text>
+                  </View>
+                ) : (
+                  <View style={{ gap: Spacing[2] }}>
+                    {!phoneOtpSent ? (
+                      <Pressable
+                        style={[styles.actionBtn, (phone.replace(/\D/g, '').length !== 10 || phoneLoading) && styles.btnDisabled]}
+                        onPress={handleRequestPhoneOTP}
+                        disabled={phone.replace(/\D/g, '').length !== 10 || phoneLoading}
+                      >
+                        {phoneLoading ? (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <ActivityIndicator size="small" color="#fff" />
+                            <Text style={styles.actionBtnText}>Sending OTP...</Text>
+                          </View>
+                        ) : (
+                          <>
+                            <MaterialIcons name="send" size={16} color="#fff" />
+                            <Text style={styles.actionBtnText}>Send Mobile OTP</Text>
+                          </>
+                        )}
+                      </Pressable>
+                    ) : (
+                      <View style={styles.otpDrawerBox}>
+                        <Text style={styles.otpInstructionText}>
+                          OTP sent to +91 {phone}.
+                        </Text>
+                        {phoneError && <Text style={styles.inlineErrorText}>{phoneError}</Text>}
+                        <View style={styles.otpGrid}>
+                          {phoneDigits.map((digit, i) => (
+                            <TextInput
+                              key={i}
+                              ref={ref => { phoneInputRefs.current[i] = ref; }}
+                              style={[styles.otpInput, digit ? styles.otpInputFilled : null]}
+                              keyboardType="number-pad"
+                              maxLength={1}
+                              value={digit}
+                              onChangeText={text => handlePhoneDigitChange(text, i)}
+                              selectTextOnFocus
+                            />
+                          ))}
+                        </View>
+                        <View style={styles.otpActionRow}>
+                          <Pressable
+                            style={[styles.verifyOtpBtn, (phoneDigits.join('').length < 6 || phoneLoading) && styles.btnDisabled]}
+                            onPress={() => handleVerifyPhoneOTP()}
+                            disabled={phoneDigits.join('').length < 6 || phoneLoading}
+                          >
+                            {phoneLoading ? (
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                <ActivityIndicator size="small" color="#fff" />
+                                <Text style={styles.verifyOtpBtnText}>Verifying OTP...</Text>
+                              </View>
+                            ) : (
+                              <Text style={styles.verifyOtpBtnText}>Verify OTP</Text>
+                            )}
+                          </Pressable>
+                          <Pressable onPress={handleRequestPhoneOTP} disabled={phoneCooldown > 0 || phoneLoading}>
+                            <Text style={[styles.resendText, phoneCooldown > 0 && styles.resendDisabled]}>
+                              {phoneCooldown > 0 ? `Resend OTP in ${phoneCooldown}s` : 'Resend OTP'}
+                            </Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    )}
+                  </View>
+                )}
+              </View>
+            </View>
+
+            {/* Password Creation */}
             <View style={styles.fieldGroup}>
-              <Text style={styles.fieldLabel}>Create Password</Text>
+              <Text style={styles.fieldLabel}>Create Password *</Text>
               <View style={[styles.inputWrapper, touched.password && !passStrength.isValid && styles.inputWrapperError]}>
                 <MaterialIcons name="lock" size={20} color={Colors.textTertiary} style={styles.inputIcon} />
                 <TextInput
@@ -552,69 +632,13 @@ export default function LoginScreen() {
                   />
                 </Pressable>
               </View>
-
-              {/* Password Requirement Checklist */}
-              {signupPassword.length > 0 && (
-                <View style={styles.passwordChecklist}>
-                  <View style={styles.checkItem}>
-                    <MaterialIcons
-                      name={passStrength.hasMinLength ? 'check-circle' : 'cancel'}
-                      size={14}
-                      color={passStrength.hasMinLength ? Colors.success : Colors.textTertiary}
-                    />
-                    <Text style={[styles.checkText, passStrength.hasMinLength && styles.checkTextActive]}>
-                      At least 8 characters
-                    </Text>
-                  </View>
-                  <View style={styles.checkItem}>
-                    <MaterialIcons
-                      name={passStrength.hasUppercase ? 'check-circle' : 'cancel'}
-                      size={14}
-                      color={passStrength.hasUppercase ? Colors.success : Colors.textTertiary}
-                    />
-                    <Text style={[styles.checkText, passStrength.hasUppercase && styles.checkTextActive]}>
-                      Uppercase letter (A-Z)
-                    </Text>
-                  </View>
-                  <View style={styles.checkItem}>
-                    <MaterialIcons
-                      name={passStrength.hasLowercase ? 'check-circle' : 'cancel'}
-                      size={14}
-                      color={passStrength.hasLowercase ? Colors.success : Colors.textTertiary}
-                    />
-                    <Text style={[styles.checkText, passStrength.hasLowercase && styles.checkTextActive]}>
-                      Lowercase letter (a-z)
-                    </Text>
-                  </View>
-                  <View style={styles.checkItem}>
-                    <MaterialIcons
-                      name={passStrength.hasDigit ? 'check-circle' : 'cancel'}
-                      size={14}
-                      color={passStrength.hasDigit ? Colors.success : Colors.textTertiary}
-                    />
-                    <Text style={[styles.checkText, passStrength.hasDigit && styles.checkTextActive]}>
-                      One numeric digit (0-9)
-                    </Text>
-                  </View>
-                  <View style={styles.checkItem}>
-                    <MaterialIcons
-                      name={passStrength.hasSpecial ? 'check-circle' : 'cancel'}
-                      size={14}
-                      color={passStrength.hasSpecial ? Colors.success : Colors.textTertiary}
-                    />
-                    <Text style={[styles.checkText, passStrength.hasSpecial && styles.checkTextActive]}>
-                      Special character (!@#$%^&*-_)
-                    </Text>
-                  </View>
-                </View>
-              )}
             </View>
 
             {/* Confirm Password */}
             <View style={styles.fieldGroup}>
-              <Text style={styles.fieldLabel}>Confirm Password</Text>
+              <Text style={styles.fieldLabel}>Confirm Password *</Text>
               <View style={[styles.inputWrapper, touched.confirmPassword && !confirmVal.isValid && styles.inputWrapperError]}>
-                <MaterialIcons name="lock-clock" size={20} color={Colors.textTertiary} style={styles.inputIcon} />
+                <MaterialIcons name="lock" size={20} color={Colors.textTertiary} style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
                   placeholder="Re-enter password"
@@ -632,7 +656,7 @@ export default function LoginScreen() {
 
             {/* Address */}
             <View style={styles.fieldGroup}>
-              <Text style={styles.fieldLabel}>Address / Locality</Text>
+              <Text style={styles.fieldLabel}>Address / Locality *</Text>
               <View style={[styles.inputWrapper, touched.address && !addressVal.isValid && styles.inputWrapperError]}>
                 <MaterialIcons name="location-on" size={20} color={Colors.textTertiary} style={styles.inputIcon} />
                 <TextInput
@@ -652,7 +676,7 @@ export default function LoginScreen() {
             {/* City & PIN Code Row */}
             <View style={styles.rowTwoCols}>
               <View style={[styles.fieldGroup, { flex: 1 }]}>
-                <Text style={styles.fieldLabel}>City</Text>
+                <Text style={styles.fieldLabel}>City *</Text>
                 <View style={[styles.inputWrapper, touched.city && !cityVal.isValid && styles.inputWrapperError]}>
                   <MaterialIcons name="location-city" size={18} color={Colors.textTertiary} style={styles.inputIcon} />
                   <TextInput
@@ -670,7 +694,7 @@ export default function LoginScreen() {
               </View>
 
               <View style={[styles.fieldGroup, { flex: 1 }]}>
-                <Text style={styles.fieldLabel}>PIN Code (6 Digits)</Text>
+                <Text style={styles.fieldLabel}>PIN Code (6 Digits) *</Text>
                 <View style={[styles.inputWrapper, touched.pincode && !pincodeVal.isValid && styles.inputWrapperError]}>
                   <MaterialIcons name="markunread-mailbox" size={18} color={Colors.textTertiary} style={styles.inputIcon} />
                   <TextInput
@@ -698,7 +722,7 @@ export default function LoginScreen() {
                 (!phoneVerified || loading) && styles.btnDisabled
               ]}
               onPress={handleSignupSubmit}
-              disabled={loading}
+              disabled={loading || !phoneVerified}
             >
               {loading ? (
                 <ActivityIndicator size="small" color="#ffffff" />
@@ -711,6 +735,12 @@ export default function LoginScreen() {
                 </>
               )}
             </Pressable>
+
+            {!phoneVerified ? (
+              <Text style={{ fontSize: Typography.xs, color: Colors.error, textAlign: 'center', marginTop: Spacing[1] }}>
+                🔒 Complete mobile phone OTP verification above to unlock signup.
+              </Text>
+            ) : null}
 
             {/* Secondary Option: Switch to Log In */}
             <Pressable
@@ -730,11 +760,12 @@ export default function LoginScreen() {
             <View style={styles.fieldGroup}>
               <Text style={styles.fieldLabel}>Email Address or Mobile Number</Text>
               <View style={styles.inputWrapper}>
-                <MaterialIcons name="email" size={20} color={Colors.textTertiary} style={styles.inputIcon} />
+                <MaterialIcons name="person" size={20} color={Colors.textTertiary} style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
                   placeholder="name@example.com or 9876543210"
                   placeholderTextColor={Colors.textTertiary}
+                  keyboardType="email-address"
                   autoCapitalize="none"
                   value={email}
                   onChangeText={setEmail}
@@ -765,7 +796,11 @@ export default function LoginScreen() {
             </View>
 
             <Pressable
-              style={({ pressed }) => [styles.submitBtn, pressed && styles.btnPressed, loading && styles.btnDisabled]}
+              style={({ pressed }) => [
+                styles.submitBtn,
+                pressed && styles.btnPressed,
+                loading && styles.btnDisabled
+              ]}
               onPress={handleLoginSubmit}
               disabled={loading}
             >
@@ -773,13 +808,34 @@ export default function LoginScreen() {
                 <ActivityIndicator size="small" color="#ffffff" />
               ) : (
                 <>
-                  <Text style={styles.submitBtnText}>Log In to Dashboard</Text>
-                  <MaterialIcons name="login" size={20} color="#ffffff" />
+                  <Text style={styles.submitBtnText}>Log In to Account</Text>
+                  <MaterialIcons name="arrow-forward" size={20} color="#ffffff" />
                 </>
               )}
             </Pressable>
 
-            {/* Secondary Option: Switch to Sign Up */}
+            {/* Quick Roles Shortcut for Demo */}
+            <View style={styles.demoDividerRow}>
+              <View style={styles.demoDividerLine} />
+              <Text style={styles.demoDividerText}>OR QUICK LOGIN AS</Text>
+              <View style={styles.demoDividerLine} />
+            </View>
+
+            <View style={styles.demoRoleBtnsRow}>
+              <Pressable style={styles.demoRoleBtn} onPress={() => login(ROLES.CUSTOMER)}>
+                <MaterialIcons name="person" size={16} color={Colors.customerColor} />
+                <Text style={styles.demoRoleBtnText}>Customer</Text>
+              </Pressable>
+              <Pressable style={styles.demoRoleBtn} onPress={() => login(ROLES.WORKER)}>
+                <MaterialIcons name="engineering" size={16} color={Colors.workerColor} />
+                <Text style={styles.demoRoleBtnText}>Worker</Text>
+              </Pressable>
+              <Pressable style={styles.demoRoleBtn} onPress={() => login(ROLES.ADMIN)}>
+                <MaterialIcons name="admin-panel-settings" size={16} color={Colors.adminColor} />
+                <Text style={styles.demoRoleBtnText}>Admin</Text>
+              </Pressable>
+            </View>
+
             <Pressable
               style={styles.switchModeRow}
               onPress={() => { setMode('signup'); setFormError(null); setFormSuccess(null); }}
@@ -796,47 +852,44 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
+  scrollContent: {
     paddingHorizontal: Spacing[5],
   },
-  brandHeader: {
+  header: {
     alignItems: 'center',
     marginVertical: Spacing[4],
   },
   logoBadge: {
     width: 56,
     height: 56,
-    borderRadius: Radius.lg,
-    backgroundColor: Colors.primary,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.primaryLight,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: Spacing[2],
-    ...Shadow.md,
   },
-  brandTitle: {
+  appName: {
     fontSize: Typography['2xl'],
     fontWeight: Typography.bold,
     color: Colors.textPrimary,
   },
-  brandSubtitle: {
+  appTagline: {
     fontSize: Typography.xs,
     color: Colors.textSecondary,
-    textAlign: 'center',
     marginTop: 2,
-    maxWidth: 280,
   },
   toggleContainer: {
     flexDirection: 'row',
     backgroundColor: Colors.surfaceTinted,
-    borderRadius: Radius.full,
+    borderRadius: Radius.lg,
     padding: 4,
-    marginVertical: Spacing[3],
+    marginBottom: Spacing[4],
   },
   toggleBtn: {
     flex: 1,
-    paddingVertical: Spacing[2],
+    paddingVertical: Spacing[3],
     alignItems: 'center',
-    borderRadius: Radius.full,
+    borderRadius: Radius.md,
   },
   toggleActive: {
     backgroundColor: Colors.surface,
@@ -849,101 +902,16 @@ const styles = StyleSheet.create({
   },
   toggleActiveText: {
     color: Colors.primary,
-    fontWeight: Typography.bold,
-  },
-  errorBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF2F2',
-    borderColor: '#FCA5A5',
-    borderWidth: 1,
-    borderRadius: Radius.md,
-    padding: Spacing[3],
-    gap: Spacing[2],
-    marginBottom: Spacing[3],
-  },
-  errorText: {
-    fontSize: Typography.xs,
-    color: Colors.error,
-    flex: 1,
-  },
-  successBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ECFDF5',
-    borderColor: '#6EE7B7',
-    borderWidth: 1,
-    borderRadius: Radius.md,
-    padding: Spacing[3],
-    gap: Spacing[2],
-    marginBottom: Spacing[3],
-  },
-  successText: {
-    fontSize: Typography.xs,
-    color: Colors.success,
-    flex: 1,
   },
   formContainer: {
-    gap: Spacing[3],
+    gap: Spacing[4],
   },
   fieldGroup: {
     gap: Spacing[1],
   },
-  labelRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
   fieldLabel: {
     fontSize: Typography.xs,
-    fontWeight: Typography.bold,
-    color: Colors.textPrimary,
-  },
-  verifiedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#ECFDF5',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: Radius.full,
-  },
-  verifiedBadgeText: {
-    fontSize: 10,
-    fontWeight: Typography.bold,
-    color: Colors.success,
-  },
-  roleSelectionRow: {
-    gap: Spacing[2],
-  },
-  roleOptionCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.surface,
-    borderWidth: 1.5,
-    borderColor: Colors.border,
-    borderRadius: Radius.md,
-    padding: Spacing[3],
-    gap: Spacing[3],
-  },
-  roleOptionCustomerActive: {
-    borderColor: Colors.customerColor,
-    backgroundColor: '#EFF6FF',
-  },
-  roleOptionWorkerActive: {
-    borderColor: Colors.workerColor,
-    backgroundColor: '#ECFDF5',
-  },
-  roleOptionTextWrap: {
-    flex: 1,
-  },
-  roleOptionTitle: {
-    fontSize: Typography.sm,
-    fontWeight: Typography.bold,
-    color: Colors.textPrimary,
-  },
-  roleOptionDesc: {
-    fontSize: Typography.xs,
+    fontWeight: Typography.semibold,
     color: Colors.textSecondary,
   },
   inputWrapper: {
@@ -954,7 +922,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     borderRadius: Radius.md,
     paddingHorizontal: Spacing[3],
-    height: 46,
+    height: 48,
   },
   inputWrapperError: {
     borderColor: Colors.error,
@@ -974,180 +942,320 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
     borderRadius: Radius.md,
-    paddingLeft: Spacing[3],
-    paddingRight: 4,
-    height: 46,
-  },
-  phoneInputRowVerified: {
-    borderColor: Colors.success,
-    backgroundColor: '#F0FDF4',
+    paddingHorizontal: Spacing[3],
+    height: 48,
   },
   countryCode: {
     fontSize: Typography.sm,
     fontWeight: Typography.bold,
     color: Colors.textSecondary,
-    marginRight: 6,
+    marginRight: Spacing[2],
   },
   phoneInput: {
     flex: 1,
     fontSize: Typography.sm,
-    fontWeight: Typography.semibold,
     color: Colors.textPrimary,
   },
-  verifyPhoneBtn: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: Spacing[3],
-    paddingVertical: 8,
-    borderRadius: Radius.sm,
+  roleSelectionRow: {
+    flexDirection: 'row',
+    gap: Spacing[3],
   },
-  verifyPhoneBtnDisabled: {
-    backgroundColor: Colors.border,
-  },
-  verifyPhoneBtnText: {
-    fontSize: Typography.xs,
-    fontWeight: Typography.bold,
-    color: '#ffffff',
-  },
-  inlineOtpDrawer: {
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.md,
-    padding: Spacing[3],
-    borderWidth: 1.5,
-    borderColor: Colors.primary,
-    marginTop: 6,
-    gap: 6,
-    ...Shadow.sm,
-  },
-  otpHeaderRow: {
+  roleOptionCard: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-  },
-  otpDrawerTitle: {
-    fontSize: Typography.xs,
-    fontWeight: Typography.bold,
-    color: Colors.textPrimary,
-  },
-  otpDrawerSub: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-  },
-  otpGrid: {
-    flexDirection: 'row',
-    gap: 6,
-    justifyContent: 'center',
-    marginVertical: 4,
-  },
-  otpInput: {
-    width: 38,
-    height: 44,
-    borderRadius: Radius.sm,
+    backgroundColor: Colors.surface,
     borderWidth: 1.5,
     borderColor: Colors.border,
-    backgroundColor: Colors.surfaceTinted,
-    textAlign: 'center',
-    fontSize: Typography.base,
+    borderRadius: Radius.lg,
+    padding: Spacing[3],
+    gap: Spacing[2],
+  },
+  roleOptionCustomerActive: {
+    borderColor: Colors.customerColor,
+    backgroundColor: Colors.customerLight + '30',
+  },
+  roleOptionWorkerActive: {
+    borderColor: Colors.workerColor,
+    backgroundColor: Colors.workerLight + '30',
+  },
+  roleOptionTextWrap: {
+    flex: 1,
+  },
+  roleOptionTitle: {
+    fontSize: Typography.sm,
     fontWeight: Typography.bold,
     color: Colors.textPrimary,
   },
-  otpInputFilled: {
-    borderColor: Colors.primary,
-    backgroundColor: '#F0F9FF',
-  },
-  otpActionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 4,
-  },
-  verifyOtpBtn: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: Spacing[3],
-    paddingVertical: 8,
-    borderRadius: Radius.sm,
-  },
-  verifyOtpBtnText: {
-    fontSize: Typography.xs,
-    fontWeight: Typography.bold,
-    color: '#ffffff',
-  },
-  resendText: {
-    fontSize: 11,
-    fontWeight: Typography.bold,
-    color: Colors.primary,
-  },
-  resendDisabled: {
+  roleOptionDesc: {
+    fontSize: 10,
     color: Colors.textTertiary,
-  },
-  passwordChecklist: {
-    backgroundColor: Colors.surfaceTinted,
-    borderRadius: Radius.sm,
-    padding: Spacing[2],
-    gap: 4,
-    marginTop: 4,
-  },
-  checkItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  checkText: {
-    fontSize: 11,
-    color: Colors.textTertiary,
-  },
-  checkTextActive: {
-    color: Colors.success,
-    fontWeight: Typography.semibold,
   },
   rowTwoCols: {
     flexDirection: 'row',
+    gap: Spacing[3],
+  },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: Spacing[2],
+    backgroundColor: Colors.errorLight,
+    padding: Spacing[3],
+    borderRadius: Radius.md,
+    marginBottom: Spacing[3],
+  },
+  errorText: {
+    fontSize: Typography.xs,
+    color: Colors.error,
+    flex: 1,
+  },
+  successBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[2],
+    backgroundColor: Colors.successLight,
+    padding: Spacing[3],
+    borderRadius: Radius.md,
+    marginBottom: Spacing[3],
+  },
+  successText: {
+    fontSize: Typography.xs,
+    color: Colors.success,
+    flex: 1,
   },
   inlineErrorText: {
-    fontSize: 11,
+    fontSize: Typography.xs,
     color: Colors.error,
-    marginTop: 2,
-  },
-  inlineSuccessText: {
-    fontSize: 11,
-    color: Colors.success,
     marginTop: 2,
   },
   submitBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Colors.primary,
-    height: 48,
-    borderRadius: Radius.md,
     gap: Spacing[2],
+    backgroundColor: Colors.primary,
+    height: 52,
+    borderRadius: Radius.lg,
     marginTop: Spacing[2],
-    ...Shadow.sm,
+    ...Shadow.md,
   },
   btnPressed: {
     opacity: 0.9,
-    transform: [{ scale: 0.99 }],
   },
   btnDisabled: {
-    opacity: 0.5,
+    backgroundColor: '#94A3B8',
+    opacity: 0.7,
   },
   submitBtnText: {
-    fontSize: Typography.sm,
+    fontSize: Typography.base,
     fontWeight: Typography.bold,
     color: '#ffffff',
   },
   switchModeRow: {
     alignItems: 'center',
-    justifyContent: 'center',
     paddingVertical: Spacing[3],
-    marginTop: Spacing[2],
   },
   switchModeText: {
     fontSize: Typography.sm,
     color: Colors.textSecondary,
   },
   switchModeHighlight: {
-    fontWeight: Typography.bold,
     color: Colors.primary,
+    fontWeight: Typography.bold,
+  },
+  demoDividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[3],
+    marginVertical: Spacing[4],
+  },
+  demoDividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: Colors.border,
+  },
+  demoDividerText: {
+    fontSize: 10,
+    fontWeight: Typography.bold,
+    color: Colors.textTertiary,
+  },
+  demoRoleBtnsRow: {
+    flexDirection: 'row',
+    gap: Spacing[2],
+  },
+  demoRoleBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing[1],
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    paddingVertical: Spacing[2],
+    borderRadius: Radius.md,
+  },
+  demoRoleBtnText: {
+    fontSize: Typography.xs,
+    fontWeight: Typography.semibold,
+    color: Colors.textPrimary,
+  },
+  // Toast Popup Styles
+  toastContainer: {
+    position: 'absolute',
+    left: Spacing[4],
+    right: Spacing[4],
+    zIndex: 9999,
+    alignItems: 'center',
+  },
+  toastContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[2],
+    paddingHorizontal: Spacing[4],
+    paddingVertical: Spacing[3],
+    borderRadius: Radius.lg,
+    maxWidth: '92%',
+    ...Shadow.md,
+  },
+  toastError: {
+    backgroundColor: '#DC2626',
+  },
+  toastSuccess: {
+    backgroundColor: '#059669',
+  },
+  toastText: {
+    color: '#ffffff',
+    fontSize: Typography.sm,
+    fontWeight: Typography.bold,
+    flexShrink: 1,
+  },
+  // Verification Card Styles
+  verificationCard: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: Radius.lg,
+    padding: Spacing[4],
+    gap: Spacing[3],
+  },
+  verifCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[2],
+  },
+  verifCardTitle: {
+    flex: 1,
+    fontSize: Typography.xs,
+    fontWeight: Typography.bold,
+    color: Colors.textPrimary,
+  },
+  statusPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: Radius.full,
+  },
+  pillSuccess: {
+    backgroundColor: '#D1FAE5',
+  },
+  pillWarning: {
+    backgroundColor: '#FEF3C7',
+  },
+  statusPillText: {
+    fontSize: 10,
+    fontWeight: Typography.bold,
+  },
+  pillTextSuccess: {
+    color: '#047857',
+  },
+  pillTextWarning: {
+    color: '#B45309',
+  },
+  verifiedStateBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing[2],
+    backgroundColor: '#ECFDF5',
+    padding: Spacing[3],
+    borderRadius: Radius.md,
+  },
+  verifiedStateText: {
+    fontSize: Typography.xs,
+    fontWeight: Typography.bold,
+    color: '#047857',
+  },
+  actionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing[2],
+    backgroundColor: Colors.primary,
+    paddingVertical: 10,
+    borderRadius: Radius.md,
+  },
+  actionBtnText: {
+    color: '#fff',
+    fontSize: Typography.xs,
+    fontWeight: Typography.bold,
+  },
+  otpInstructionText: {
+    fontSize: Typography.xs,
+    color: Colors.textSecondary,
+    marginBottom: Spacing[1],
+  },
+  otpDrawerBox: {
+    backgroundColor: Colors.surface,
+    padding: Spacing[3],
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: Spacing[2],
+  },
+  otpGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginVertical: Spacing[2],
+  },
+  otpInput: {
+    width: 40,
+    height: 44,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    borderRadius: Radius.md,
+    textAlign: 'center',
+    fontSize: Typography.base,
+    fontWeight: Typography.bold,
+    color: Colors.textPrimary,
+    backgroundColor: Colors.surfaceTinted,
+  },
+  otpInputFilled: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primaryLight + '30',
+  },
+  otpActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing[2],
+    marginTop: Spacing[1],
+  },
+  verifyOtpBtn: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: Spacing[4],
+    paddingVertical: 8,
+    borderRadius: Radius.md,
+  },
+  verifyOtpBtnText: {
+    color: '#fff',
+    fontSize: Typography.xs,
+    fontWeight: Typography.bold,
+  },
+  resendText: {
+    fontSize: Typography.xs,
+    color: Colors.primary,
+    fontWeight: Typography.bold,
+  },
+  resendDisabled: {
+    color: Colors.textTertiary,
   },
 });

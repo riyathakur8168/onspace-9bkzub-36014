@@ -1,7 +1,7 @@
 import React, { createContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SplashScreen from 'expo-splash-screen';
-import { Role, ROLES } from '@/constants/config';
+import { Role, ROLES, getApiEndpoint } from '@/constants/config';
 import { MOCK_WORKERS, MOCK_JOB_OFFERS, MOCK_BOOKINGS, JobOffer, ServiceRequest, Worker, normalizeCategory } from '@/services/mockData';
 import { defaultMatchingEngine, MatchingWeights, DEFAULT_MATCHING_WEIGHTS } from '@/services/matchingEngine';
 import { defaultDispatchManager, DispatchSession } from '@/services/dispatchManager';
@@ -236,9 +236,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [pushToken, setPushToken] = useState<string | null>(null);
 
   // Helper function to map BackendUser to App User
-  const mapBackendUserToUser = (bUser: BackendUser, profileObj?: any): User => {
+  const mapBackendUserToUser = (bUser: BackendUser, profileObj?: any, token?: string): User => {
     const isCustomer = bUser.role === 'customer';
     const isWorker = bUser.role === 'worker';
+
+    const formatDocUri = (fileUrl?: string) => {
+      if (!fileUrl) return '';
+      const endpoint = getApiEndpoint(fileUrl);
+      if (token && fileUrl.startsWith('/api') && !endpoint.includes('token=')) {
+        return `${endpoint}?token=${encodeURIComponent(token)}`;
+      }
+      return endpoint;
+    };
+
     return {
       id: String(bUser.id),
       name: bUser.name,
@@ -273,128 +283,149 @@ export function AppProvider({ children }: { children: ReactNode }) {
         skillCertificateStatus: profileObj.skill_certificate_status,
         verificationState: profileObj.verification_state === 'verified' ? 'VERIFIED' : 'UNDER_REVIEW',
         hasSkillCertificateCommitment: profileObj.has_skill_certificate_commitment,
+        workSlipDocument: profileObj.work_slip_document ? {
+          name: profileObj.work_slip_document.original_filename,
+          uri: formatDocUri(profileObj.work_slip_document.file_url),
+          uploadedAt: new Date(profileObj.work_slip_document.uploaded_at).toLocaleDateString(),
+          status: profileObj.work_slip_document.status,
+        } : (user?.workerProfile?.workSlipDocument || null),
+        skillCertificateDocument: profileObj.skill_certificate_document ? {
+          name: profileObj.skill_certificate_document.original_filename,
+          uri: formatDocUri(profileObj.skill_certificate_document.file_url),
+          uploadedAt: new Date(profileObj.skill_certificate_document.uploaded_at).toLocaleDateString(),
+          status: profileObj.skill_certificate_document.status,
+        } : (user?.workerProfile?.skillCertificateDocument || null),
       } : undefined,
     };
   };
 
-  // Synchronize backend data for current session
+  // Synchronize backend data for current session (optimized with parallel requests)
   const refreshBackendData = async () => {
     try {
       const token = await getStoredToken();
       if (!token) return;
 
       const meRes = await authApi.getMe();
-      if (meRes.data) {
-        const bUser = meRes.data;
-        let profileObj: any = null;
+      if (!meRes.data) {
+        await removeStoredToken();
+        setUser(null);
+        setRole(null);
+        await AsyncStorage.removeItem(STORAGE_KEY);
+        return;
+      }
 
-        if (bUser.role === 'customer') {
-          const profRes = await customerApi.getMyProfile();
-          if (profRes.data) profileObj = profRes.data;
-        } else if (bUser.role === 'worker') {
-          const profRes = await workerApi.getMyProfile();
-          if (profRes.data) profileObj = profRes.data;
+      const bUser = meRes.data;
+
+      // Parallelize profile, services catalogue, and role-specific offers/requests
+      const [profileRes, servicesRes, roleDataRes] = await Promise.all([
+        bUser.role === 'customer'
+          ? customerApi.getMyProfile()
+          : bUser.role === 'worker'
+            ? workerApi.getMyProfile()
+            : Promise.resolve({ data: null }),
+        serviceApi.getServices(),
+        bUser.role === 'worker'
+          ? offerApi.getMyOffers()
+          : bUser.role === 'customer'
+            ? requestApi.getMyRequests()
+            : Promise.resolve({ data: null }),
+      ]);
+
+      const profileObj = profileRes.data;
+      const appUser = mapBackendUserToUser(bUser, profileObj, token || undefined);
+      setUser(appUser);
+      setRole(appUser.role);
+      persistUser(appUser);
+
+      // Map services catalogue
+      if (servicesRes.data && Array.isArray(servicesRes.data)) {
+        const mappedSkills: SkillItem[] = servicesRes.data.map(s => ({
+          id: s.code,
+          name: s.name,
+          category: s.category.toLowerCase(),
+          description: s.description,
+          isActive: s.is_active,
+          basePrice: s.default_price,
+        }));
+        if (mappedSkills.length > 0) {
+          setSkillsRegistry(mappedSkills);
         }
+      }
 
-        const appUser = mapBackendUserToUser(bUser, profileObj);
-        setUser(appUser);
-        setRole(appUser.role);
-
-        // Fetch Services Catalogue from FastAPI
-        const servicesRes = await serviceApi.getServices();
-        if (servicesRes.data && Array.isArray(servicesRes.data)) {
-          const mappedSkills: SkillItem[] = servicesRes.data.map(s => ({
-            id: s.code,
-            name: s.name,
-            category: s.category.toLowerCase(),
-            description: s.description,
-            isActive: s.is_active,
-            basePrice: s.default_price,
-          }));
-          if (mappedSkills.length > 0) {
-            setSkillsRegistry(mappedSkills);
-          }
-        }
-
-        // Fetch Worker Offers if user is a Worker
-        if (bUser.role === 'worker') {
-          const offersRes = await offerApi.getMyOffers();
-          if (offersRes.data && Array.isArray(offersRes.data)) {
-            const mappedOffers: JobOffer[] = offersRes.data.map(o => ({
-              id: String(o.id),
-              requestId: String(o.request_id),
-              serviceLabel: o.request?.service_label || 'Service Job',
-              issueDescription: o.request?.issue_description || '',
-              customerArea: o.request?.locality || o.request?.city || 'Dehradun',
-              distance: '2.5 km',
-              travelTime: '10 mins',
-              scheduledSlot: o.request?.preferred_slot || 'ASAP',
-              serviceValue: o.request?.service_value || 500,
-              workerShare: o.request?.worker_share || 400,
-              cooperativeContribution: 0.15 * (o.request?.service_value || 500),
-              allocationReason: o.selection_reason || 'Matched via Fair Opportunity Allocation',
-              expiresInSeconds: 300,
-              urgency: 'urgent',
-              fairnessReason: o.selection_reason || 'Matched via Fair Opportunity Allocation',
-              status: o.status as any,
-            }));
-            setJobOffers(mappedOffers);
-          }
-        }
-
-        // Fetch Service Requests if user is a Customer
-        if (bUser.role === 'customer') {
-          const reqsRes = await requestApi.getMyRequests();
-          if (reqsRes.data && Array.isArray(reqsRes.data)) {
-            const mappedReqs: ServiceRequest[] = reqsRes.data.map(r => ({
-              id: String(r.id),
-              customerId: String(r.customer_id),
-              serviceId: String(r.service_id || 'plumbing'),
-              serviceLabel: r.service_label,
-              issueDescription: r.issue_description,
-              address: r.address,
-              preferredSlot: r.preferred_slot || 'ASAP',
-              status: r.status,
-              serviceValue: r.service_value,
-              workerShare: r.worker_share,
-              createdAt: r.created_at,
-              otpCode: r.otp_code,
-            }));
-            setBookings(mappedReqs);
-          }
-        }
+      // Map Worker Offers if user is a Worker
+      if (bUser.role === 'worker' && roleDataRes.data && Array.isArray(roleDataRes.data)) {
+        const mappedOffers: JobOffer[] = roleDataRes.data.map(o => ({
+          id: String(o.id),
+          requestId: String(o.request_id),
+          serviceLabel: o.request?.service_label || 'Service Job',
+          issueDescription: o.request?.issue_description || '',
+          customerArea: o.request?.locality || o.request?.city || 'Dehradun',
+          distance: '2.5 km',
+          travelTime: '10 mins',
+          scheduledSlot: o.request?.preferred_slot || 'ASAP',
+          serviceValue: o.request?.service_value || 500,
+          workerShare: o.request?.worker_share || 400,
+          cooperativeContribution: 0.15 * (o.request?.service_value || 500),
+          allocationReason: o.selection_reason || 'Matched via Fair Opportunity Allocation',
+          expiresInSeconds: 300,
+          urgency: 'urgent',
+          fairnessReason: o.selection_reason || 'Matched via Fair Opportunity Allocation',
+          status: o.status as any,
+        }));
+        setJobOffers(mappedOffers);
+      } else if (bUser.role === 'customer' && roleDataRes.data && Array.isArray(roleDataRes.data)) {
+        const mappedReqs: ServiceRequest[] = roleDataRes.data.map(r => ({
+          id: String(r.id),
+          customerId: String(r.customer_id),
+          serviceId: String(r.service_id || 'plumbing'),
+          serviceLabel: r.service_label,
+          issueDescription: r.issue_description,
+          address: r.address,
+          preferredSlot: r.preferred_slot || 'ASAP',
+          status: r.status,
+          serviceValue: r.service_value,
+          workerShare: r.worker_share,
+          createdAt: r.created_at,
+          otpCode: r.otp_code,
+        }));
+        setBookings(mappedReqs);
       }
     } catch (err) {
       console.warn('[AppContext] Failed to refresh backend data:', err);
     }
   };
 
-  // App initialization & Session Restoration
+  // Fast Non-Blocking App Initialization & Instant Session Restoration
   useEffect(() => {
     async function loadSession() {
       try {
         const token = await getStoredToken();
-        if (token) {
-          const meRes = await authApi.getMe();
-          if (meRes.data) {
-            await refreshBackendData();
-          } else {
-            await removeStoredToken();
-            setUser(null);
-            setRole(null);
+        const cachedUserJson = await AsyncStorage.getItem(STORAGE_KEY);
+
+        if (cachedUserJson) {
+          try {
+            const cachedUser = JSON.parse(cachedUserJson);
+            setUser(cachedUser);
+            setRole(cachedUser.role || null);
+          } catch (e) {
+            // ignore parse error
           }
-        } else {
-          setUser(null);
-          setRole(null);
         }
 
-        const push = await notificationService.registerForPushNotificationsAsync();
-        setPushToken(push);
+        // Hydrate UI immediately so main screen renders in <100ms
+        setIsHydrated(true);
+        SplashScreen.hideAsync().catch(() => {});
+
+        // Fetch fresh data and push token asynchronously in background
+        if (token) {
+          refreshBackendData();
+        }
+
+        notificationService.registerForPushNotificationsAsync().then(push => {
+          if (push) setPushToken(push);
+        }).catch(() => {});
       } catch (err) {
-        console.error('Failed to load user session from backend:', err);
-        setUser(null);
-        setRole(null);
-      } finally {
+        console.error('Failed to load user session:', err);
         setIsHydrated(true);
         SplashScreen.hideAsync().catch(() => {});
       }
@@ -428,7 +459,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     address?: string,
     city?: string,
     pincode?: string,
-    phoneVerified?: boolean
+    sessionId?: string,
+    aadhaarNumber?: string
   ) => {
     // 1. Validations
     const nameVal = validateFullName(name);
@@ -436,13 +468,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const emailVal = validateEmail(email);
     if (!emailVal.isValid) return { success: false, error: emailVal.error };
-
-    const phoneVal = validatePhone(phone);
-    if (!phoneVal.isValid) return { success: false, error: phoneVal.error };
-
-    if (!phoneVerified) {
-      return { success: false, error: 'Please verify your phone number via OTP before creating your account.' };
-    }
 
     const passVal = validatePassword(pass);
     if (!passVal.isValid) return { success: false, error: passVal.error };
@@ -454,6 +479,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       phone: phone.trim(),
       password: pass,
       role: selectedRole,
+      session_id: sessionId,
+      aadhaar_number: aadhaarNumber,
     });
 
     if (res.error) {
@@ -568,6 +595,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const uploadWorkSlip = async (doc: { name: string; uri: string }) => {
     const res = await workerApi.uploadWorkSlip(doc.name, doc.uri, doc.uri);
+    const token = await getStoredToken();
+    let backendUri = doc.uri;
+    if (res.data?.document_reference && res.data.document_reference.startsWith('/api')) {
+      backendUri = getApiEndpoint(res.data.document_reference) + (token ? `?token=${encodeURIComponent(token)}` : '');
+    }
+
+    if (user && user.workerProfile) {
+      const updatedUser: User = {
+        ...user,
+        workerProfile: {
+          ...user.workerProfile,
+          workSlipStatus: 'uploaded',
+          workSlipDocument: {
+            name: doc.name,
+            uri: backendUri,
+            uploadedAt: new Date().toLocaleDateString(),
+            status: 'uploaded',
+          },
+        },
+      };
+      await persistUser(updatedUser);
+    }
+    setWorkersList(prev => prev.map(w => {
+      if (w.id === user?.id || w.phone === user?.phone) {
+        return {
+          ...w,
+          workSlipStatus: 'uploaded',
+          workSlipDocument: {
+            name: doc.name,
+            uri: backendUri,
+            uploadedAt: new Date().toLocaleDateString(),
+            status: 'uploaded',
+          } as any,
+        };
+      }
+      return w;
+    }));
     if (res.data) {
       await refreshBackendData();
     }
@@ -575,6 +639,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const uploadSkillCertificate = async (doc: { name: string; uri: string }) => {
     const res = await workerApi.uploadSkillCertificate(doc.name, doc.uri, doc.uri);
+    const token = await getStoredToken();
+    let backendUri = doc.uri;
+    if (res.data?.document_reference && res.data.document_reference.startsWith('/api')) {
+      backendUri = getApiEndpoint(res.data.document_reference) + (token ? `?token=${encodeURIComponent(token)}` : '');
+    }
+
+    if (user && user.workerProfile) {
+      const updatedUser: User = {
+        ...user,
+        workerProfile: {
+          ...user.workerProfile,
+          skillCertificateStatus: 'uploaded',
+          certificateStatus: 'Verified',
+          skillCertificateDocument: {
+            name: doc.name,
+            uri: backendUri,
+            uploadedAt: new Date().toLocaleDateString(),
+            status: 'uploaded',
+          },
+        },
+      };
+      await persistUser(updatedUser);
+    }
+    setWorkersList(prev => prev.map(w => {
+      if (w.id === user?.id || w.phone === user?.phone) {
+        return {
+          ...w,
+          skillCertificateStatus: 'uploaded',
+          skillCertificateDocument: {
+            name: doc.name,
+            uri: backendUri,
+            uploadedAt: new Date().toLocaleDateString(),
+            status: 'uploaded',
+          } as any,
+        };
+      }
+      return w;
+    }));
     if (res.data) {
       await refreshBackendData();
     }

@@ -62,17 +62,55 @@ export const workerApi = {
     });
   },
 
-  async uploadWorkSlip(document_name: string, document_reference: string, file_path?: string) {
+  async uploadWorkSlip(docName: string, docRef: string, fileUri?: string) {
+    if (fileUri && (fileUri.startsWith('file://') || fileUri.startsWith('content://') || fileUri.startsWith('ph://'))) {
+      const formData = new FormData();
+      formData.append('document_name', docName);
+      const filename = docName || 'signed_work_slip.pdf';
+      const ext = filename.split('.').pop() || 'pdf';
+      const mimeType = ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'application/pdf';
+
+      formData.append('file', {
+        uri: fileUri,
+        name: filename,
+        type: mimeType,
+      } as any);
+
+      return await apiRequest('/api/workers/me/work-slip', {
+        method: 'POST',
+        body: formData,
+      });
+    }
+
     return await apiRequest('/api/workers/me/work-slip', {
       method: 'POST',
-      body: JSON.stringify({ document_name, document_reference, file_path }),
+      body: JSON.stringify({ document_name: docName, document_reference: docRef, file_path: fileUri }),
     });
   },
 
-  async uploadSkillCertificate(certificate_name: string, document_reference: string, file_path?: string) {
+  async uploadSkillCertificate(certName: string, docRef: string, fileUri?: string) {
+    if (fileUri && (fileUri.startsWith('file://') || fileUri.startsWith('content://') || fileUri.startsWith('ph://'))) {
+      const formData = new FormData();
+      formData.append('certificate_name', certName);
+      const filename = certName || 'skill_certificate.pdf';
+      const ext = filename.split('.').pop() || 'pdf';
+      const mimeType = ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'application/pdf';
+
+      formData.append('file', {
+        uri: fileUri,
+        name: filename,
+        type: mimeType,
+      } as any);
+
+      return await apiRequest('/api/workers/me/skill-certificate', {
+        method: 'POST',
+        body: formData,
+      });
+    }
+
     return await apiRequest('/api/workers/me/skill-certificate', {
       method: 'POST',
-      body: JSON.stringify({ certificate_name, document_reference, file_path }),
+      body: JSON.stringify({ certificate_name: certName, document_reference: docRef, file_path: fileUri }),
     });
   },
 

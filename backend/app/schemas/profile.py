@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, ConfigDict
+from app.schemas.document import DocumentSchema
 
 class CustomerProfileBase(BaseModel):
     phone: Optional[str] = None
@@ -93,5 +94,7 @@ class WorkerProfileResponse(WorkerProfileBase):
     created_at: datetime
     updated_at: datetime
     service_areas: List[WorkerServiceAreaSchema] = []
+    work_slip_document: Optional[DocumentSchema] = None
+    skill_certificate_document: Optional[DocumentSchema] = None
 
     model_config = ConfigDict(from_attributes=True)

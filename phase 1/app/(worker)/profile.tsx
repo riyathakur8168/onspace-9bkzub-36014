@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, Modal, TextInput, Alert, ActivityIndicator
+  View, Text, StyleSheet, ScrollView, Pressable, Modal, TextInput, Alert, ActivityIndicator, Image, Linking
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -36,6 +36,25 @@ export default function WorkerProfile() {
   const [activeModal, setActiveModal] = useState<
     'edit_profile' | 'training' | 'reviews' | 'documents' | 'hours' | 'service_area' | 'help' | null
   >(null);
+
+  const [viewingDoc, setViewingDoc] = useState<{ uri: string; title: string } | null>(null);
+
+  const handleViewDocument = async (uri?: string, title?: string) => {
+    if (!uri) {
+      Alert.alert('Document File Missing', 'The document file path is missing or invalid.');
+      return;
+    }
+    const docTitle = title || 'Document';
+    if (uri.startsWith('http://') || uri.startsWith('https://')) {
+      try {
+        await Linking.openURL(uri);
+        return;
+      } catch (e) {
+        // Fall back to modal preview if browser open fails
+      }
+    }
+    setViewingDoc({ uri, title: docTitle });
+  };
 
   // Edit Worker Profile Form State
   const [editName, setEditName] = useState(user?.name || worker.name);
@@ -166,18 +185,35 @@ export default function WorkerProfile() {
     }, 800);
   };
 
-  const hasWorkSlip = !!(worker.workSlipDocument || worker.verificationDocument || (user?.workerProfile as any)?.workSlipDocument || (user?.workerProfile as any)?.verificationDocument);
-  const isWorkSlipApproved = worker.workSlipStatus === 'approved' || worker.adminApprovalStatus === 'APPROVED' || currentVerifState === 'VERIFIED';
-  const isSkillCertVerified = worker.skillCertificateStatus === 'verified' || (user?.workerProfile as any)?.certificateStatus === 'Verified';
+  const hasWorkSlip = !!(
+    worker.workSlipDocument ||
+    worker.verificationDocument ||
+    (user?.workerProfile as any)?.workSlipDocument ||
+    (user?.workerProfile as any)?.verificationDocument ||
+    worker.workSlipStatus === 'uploaded' ||
+    worker.workSlipStatus === 'approved' ||
+    (user?.workerProfile as any)?.workSlipStatus === 'uploaded' ||
+    (user?.workerProfile as any)?.workSlipStatus === 'approved'
+  );
 
-  // RULE 10: Green Verified Tick ONLY when BOTH Work Slip approved AND Skill Certificate verified!
-  const isFullyVerified = isWorkSlipApproved && isSkillCertVerified;
+  const hasSkillCert = !!(
+    worker.skillCertificateDocument ||
+    (user?.workerProfile as any)?.skillCertificateDocument ||
+    worker.skillCertificateStatus === 'uploaded' ||
+    worker.skillCertificateStatus === 'verified' ||
+    (user?.workerProfile as any)?.certificateStatus === 'Verified' ||
+    (user?.workerProfile as any)?.certificateStatus === 'Uploaded' ||
+    (user?.workerProfile as any)?.skillCertificateStatus === 'uploaded' ||
+    (user?.workerProfile as any)?.skillCertificateStatus === 'verified'
+  );
 
-  const overallStatusLabel = !hasWorkSlip
-    ? 'Worker Onboarding Incomplete'
-    : !isSkillCertVerified
-      ? 'Profile Partially Verified'
-      : 'Fully Verified';
+  const isSkillCertVerified = hasSkillCert;
+
+  // Green Verified Tick ONLY when BOTH Work Slip AND Skill Certificate are uploaded/verified
+  const isFullyVerified = hasWorkSlip && hasSkillCert;
+
+  const skillCertDocObj = worker.skillCertificateDocument || (user?.workerProfile as any)?.skillCertificateDocument;
+  const workSlipDocObj = worker.workSlipDocument || worker.verificationDocument || (user?.workerProfile as any)?.workSlipDocument || (user?.workerProfile as any)?.verificationDocument;
 
   // Calculate remaining days for 10-day certification commitment
   const deadlineIso = worker.certificateDeadlineDate || (user?.workerProfile as any)?.certificateDeadlineDate;
@@ -202,12 +238,6 @@ export default function WorkerProfile() {
           <MaterialIcons name="edit" size={14} color={Colors.primary} />
           <Text style={styles.editText}>Edit Profile</Text>
         </Pressable>
-        <View style={styles.verifiedRow}>
-          <Badge
-            label={isFullyVerified ? `🟢 Verified ${worker.skills[0] || worker.primaryCategory}` : hasWorkSlip ? 'Profile Partially Verified' : 'Onboarding Incomplete'}
-            variant={isFullyVerified ? 'success' : hasWorkSlip ? 'warning' : 'error'}
-          />
-        </View>
         <Text style={styles.joined}>Member since {worker.joinedDate}</Text>
       </View>
 
@@ -215,13 +245,13 @@ export default function WorkerProfile() {
       <View style={[styles.card, { borderLeftWidth: 4, borderLeftColor: isFullyVerified ? Colors.success : hasWorkSlip ? '#F59E0B' : Colors.error }]}>
         <View style={styles.sectionHeaderRow}>
           <MaterialIcons name={isFullyVerified ? 'verified' : 'info'} size={22} color={isFullyVerified ? Colors.success : hasWorkSlip ? '#D97706' : Colors.error} />
-          <Text style={styles.cardTitle}>Overall Profile Status: {overallStatusLabel}</Text>
+          <Text style={styles.cardTitle}>Document & Verification Status</Text>
         </View>
         <Text style={styles.cardSubtitle}>
           {isFullyVerified
             ? 'Your profile is fully verified with a Green Verified Tick! You are eligible for all matching customer jobs.'
             : hasWorkSlip
-              ? `Work Slip is active & receiving ${worker.skills[0] || worker.primaryCategory} jobs. Upload your Skill Certificate within ${daysRemaining} days for full Green Tick verification.`
+              ? `Work Slip is active & receiving ${worker.skills[0] || worker.primaryCategory} jobs. Upload your Skill Certificate for full Green Tick verification.`
               : 'COMPULSORY: Upload your signed Work Slip to complete onboarding and unlock your worker dashboard.'}
         </Text>
       </View>
@@ -235,18 +265,31 @@ export default function WorkerProfile() {
             <Text style={styles.cardSubtitle}>Skill Certificate (ITI / Skill India / Vocational Partner)</Text>
           </View>
           <Badge
-            label={isSkillCertVerified ? 'VERIFIED' : worker.skillCertificateDocument ? 'UPLOADED' : 'PENDING'}
-            variant={isSkillCertVerified ? 'success' : worker.skillCertificateDocument ? 'primary' : 'warning'}
+            label={hasSkillCert ? 'UPLOADED' : 'PENDING'}
+            variant={hasSkillCert ? 'success' : 'warning'}
           />
         </View>
 
-        {worker.skillCertificateDocument ? (
-          <View style={styles.docRow}>
-            <MaterialIcons name="verified" size={22} color="#0D9488" />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.docTitle}>{worker.skillCertificateDocument.name}</Text>
-              <Text style={styles.docSub}>Uploaded: {worker.skillCertificateDocument.uploadedAt} · Status: {worker.skillCertificateDocument.status}</Text>
+        {hasSkillCert ? (
+          <View style={{ gap: Spacing[2] }}>
+            <View style={styles.docRow}>
+              <MaterialIcons name="verified" size={22} color="#0D9488" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.docTitle}>
+                  {skillCertDocObj?.name || 'Skill Certificate'}
+                </Text>
+                <Text style={styles.docSub}>
+                  Uploaded: {skillCertDocObj?.uploadedAt || 'Uploaded'} · Status: {skillCertDocObj?.status || 'Uploaded'}
+                </Text>
+              </View>
             </View>
+            <Pressable
+              style={styles.viewDocBtn}
+              onPress={() => handleViewDocument(skillCertDocObj?.uri, skillCertDocObj?.name || 'Skill Certificate')}
+            >
+              <MaterialIcons name="visibility" size={14} color="#0D9488" />
+              <Text style={styles.viewDocBtnText}>View Document</Text>
+            </Pressable>
           </View>
         ) : (
           <View style={{ gap: Spacing[2] }}>
@@ -280,24 +323,47 @@ export default function WorkerProfile() {
           />
         </View>
 
-        <View style={{ gap: Spacing[2] }}>
-          <Pressable style={styles.downloadBtn} onPress={handleDownloadForm} disabled={downloadingPdf}>
-            {downloadingPdf ? <ActivityIndicator color="#fff" size="small" /> : (
-              <>
-                <MaterialIcons name="picture-as-pdf" size={18} color="#fff" />
-                <Text style={styles.downloadBtnText}>Download Work Slip Form (PDF)</Text>
-              </>
-            )}
-          </Pressable>
-          <Pressable style={[styles.downloadBtn, { backgroundColor: Colors.primary }]} onPress={handlePickDocument} disabled={uploadingDoc}>
-            {uploadingDoc ? <ActivityIndicator color="#fff" size="small" /> : (
-              <>
-                <MaterialIcons name="cloud-upload" size={18} color="#fff" />
-                <Text style={styles.downloadBtnText}>Upload Signed Work Slip</Text>
-              </>
-            )}
-          </Pressable>
-        </View>
+        {hasWorkSlip ? (
+          <View style={{ gap: Spacing[2] }}>
+            <View style={styles.docRow}>
+              <MaterialIcons name="assignment-turned-in" size={22} color={Colors.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.docTitle}>
+                  {workSlipDocObj?.name || 'Signed Work Slip'}
+                </Text>
+                <Text style={styles.docSub}>
+                  Uploaded: {workSlipDocObj?.uploadedAt || 'Uploaded'} · Status: {workSlipDocObj?.status || 'Under Review by Society Head'}
+                </Text>
+              </View>
+            </View>
+            <Pressable
+              style={styles.viewDocBtn}
+              onPress={() => handleViewDocument(workSlipDocObj?.uri, workSlipDocObj?.name || 'Signed Work Slip')}
+            >
+              <MaterialIcons name="visibility" size={14} color={Colors.primary} />
+              <Text style={[styles.viewDocBtnText, { color: Colors.primary }]}>View Document</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <View style={{ gap: Spacing[2] }}>
+            <Pressable style={styles.downloadBtn} onPress={handleDownloadForm} disabled={downloadingPdf}>
+              {downloadingPdf ? <ActivityIndicator color="#fff" size="small" /> : (
+                <>
+                  <MaterialIcons name="picture-as-pdf" size={18} color="#fff" />
+                  <Text style={styles.downloadBtnText}>Download Work Slip Form (PDF)</Text>
+                </>
+              )}
+            </Pressable>
+            <Pressable style={[styles.downloadBtn, { backgroundColor: Colors.primary }]} onPress={handlePickDocument} disabled={uploadingDoc}>
+              {uploadingDoc ? <ActivityIndicator color="#fff" size="small" /> : (
+                <>
+                  <MaterialIcons name="cloud-upload" size={18} color="#fff" />
+                  <Text style={styles.downloadBtnText}>Upload Signed Work Slip</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+        )}
       </View>
 
       {/* Stats */}
@@ -616,6 +682,50 @@ export default function WorkerProfile() {
           </View>
         </View>
       </Modal>
+
+      {/* DOCUMENT PREVIEW MODAL */}
+      <Modal visible={!!viewingDoc} animationType="fade" transparent onRequestClose={() => setViewingDoc(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { maxHeight: '80%' }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle} numberOfLines={1}>{viewingDoc?.title || 'Document Preview'}</Text>
+              <Pressable onPress={() => setViewingDoc(null)}>
+                <MaterialIcons name="close" size={22} color={Colors.textPrimary} />
+              </Pressable>
+            </View>
+
+            <ScrollView contentContainerStyle={{ alignItems: 'center', paddingVertical: Spacing[4], gap: Spacing[3] }}>
+              {viewingDoc?.uri && (
+                /\.(jpg|jpeg|png|webp)($|\?)/i.test(viewingDoc.uri) ||
+                viewingDoc.uri.startsWith('data:image') ||
+                viewingDoc.uri.includes('DocumentPicker') ||
+                (viewingDoc.title && /\.(jpg|jpeg|png|webp)$/i.test(viewingDoc.title))
+              ) ? (
+                <Image source={{ uri: viewingDoc.uri }} style={{ width: '100%', height: 350, resizeMode: 'contain', borderRadius: Radius.md }} />
+              ) : (
+                <View style={{ alignItems: 'center', gap: Spacing[3], padding: Spacing[4] }}>
+                  <MaterialIcons name="insert-drive-file" size={56} color={Colors.primary} />
+                  <Text style={{ fontSize: Typography.base, fontWeight: Typography.bold, color: Colors.textPrimary, textAlign: 'center' }}>
+                    {viewingDoc?.title}
+                  </Text>
+                  <Text style={{ fontSize: Typography.xs, color: Colors.textTertiary, textAlign: 'center', marginHorizontal: 20 }}>
+                    Official document file registered in OnePlace verification database.
+                  </Text>
+                  {viewingDoc?.uri && (viewingDoc.uri.startsWith('http://') || viewingDoc.uri.startsWith('https://')) ? (
+                    <Pressable
+                      style={styles.downloadBtn}
+                      onPress={() => Linking.openURL(viewingDoc.uri)}
+                    >
+                      <MaterialIcons name="open-in-new" size={18} color="#fff" />
+                      <Text style={styles.downloadBtnText}>Open Document in Browser / Viewer</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -712,6 +822,22 @@ const styles = StyleSheet.create({
   },
   docTitle: { fontSize: Typography.sm, fontWeight: Typography.semibold, color: Colors.textPrimary },
   docSub: { fontSize: Typography.xs, color: Colors.textSecondary, marginTop: 2 },
+  viewDocBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: Radius.sm,
+    marginTop: 2,
+  },
+  viewDocBtnText: {
+    fontSize: Typography.xs,
+    fontWeight: Typography.bold,
+    color: '#0D9488',
+  },
   shiftCard: { backgroundColor: Colors.surfaceTinted, padding: Spacing[3], borderRadius: Radius.md, marginBottom: Spacing[2], gap: 4 },
   shiftTitle: { fontSize: Typography.sm, fontWeight: Typography.bold, color: Colors.textPrimary },
   shiftSub: { fontSize: Typography.xs, color: Colors.textSecondary },

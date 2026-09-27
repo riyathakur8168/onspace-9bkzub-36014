@@ -15,10 +15,13 @@ export async function apiRequest<T = any>(
   const token = await getStoredToken();
 
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
     Accept: 'application/json',
     ...(options.headers as Record<string, string>),
   };
+
+  if (!(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+  }
 
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
@@ -52,7 +55,9 @@ export async function apiRequest<T = any>(
 
     return { status, data: responseData as T };
   } catch (error: any) {
-    console.warn(`[API Client] Network error fetching ${url}:`, error);
+    if (__DEV__) {
+      console.log(`[API Client] Network request to ${url} failed:`, error?.message || error);
+    }
     return {
       status: 0,
       error: error?.message || 'Network connection failed. Please check backend status.',

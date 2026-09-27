@@ -4,8 +4,61 @@ from sqlalchemy.orm import Session
 
 from app.models.profile import WorkerProfile
 from app.models.verification import WorkSlip, SkillCertificate, WorkerVerification
+from app.models.document import Document
 from app.models.notification import NotificationType
 from app.services.notification_service import send_notification
+
+def create_or_update_document_record(
+    db: Session,
+    user_id: int,
+    worker_id: Optional[int],
+    document_type: str,
+    original_filename: str,
+    stored_filename: str,
+    storage_key: str,
+    file_path: str,
+    mime_type: str = "application/pdf",
+    file_size: int = 0
+) -> Document:
+    doc = db.query(Document).filter(
+        Document.user_id == user_id,
+        Document.document_type == document_type
+    ).first()
+    
+    now = datetime.now(timezone.utc)
+    if not doc:
+        doc = Document(
+            user_id=user_id,
+            worker_id=worker_id,
+            document_type=document_type,
+            original_filename=original_filename,
+            stored_filename=stored_filename,
+            storage_key=storage_key,
+            file_path=file_path,
+            file_url="",
+            mime_type=mime_type,
+            file_size=file_size,
+            uploaded_at=now,
+            status="uploaded"
+        )
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+    else:
+        doc.original_filename = original_filename
+        doc.stored_filename = stored_filename
+        doc.storage_key = storage_key
+        doc.file_path = file_path
+        doc.mime_type = mime_type
+        doc.file_size = file_size
+        doc.uploaded_at = now
+        doc.status = "uploaded"
+        
+    doc.file_url = f"/api/documents/{doc.id}/file"
+    db.commit()
+    db.refresh(doc)
+    return doc
+
 
 def update_worker_verification_state(db: Session, worker_profile: WorkerProfile) -> WorkerVerification:
     verification = db.query(WorkerVerification).filter(

@@ -26,12 +26,30 @@ export default function WorkerHome() {
   const currentWorker = workersList.find(w => w.id === user?.id || w.phone === user?.phone);
   const verifState = currentWorker?.verificationState || (currentWorker?.verificationStatus === 'verified' ? 'VERIFIED' : 'VERIFICATION_PENDING');
 
-  const hasWorkSlip = !!(currentWorker?.workSlipDocument || currentWorker?.verificationDocument || (user?.workerProfile as any)?.workSlipDocument || (user?.workerProfile as any)?.verificationDocument);
-  const isWorkSlipApproved = currentWorker?.workSlipStatus === 'approved' || currentWorker?.adminApprovalStatus === 'APPROVED' || verifState === 'VERIFIED';
-  const isSkillCertVerified = currentWorker?.skillCertificateStatus === 'verified' || (user?.workerProfile as any)?.certificateStatus === 'Verified';
+  const hasWorkSlip = !!(
+    currentWorker?.workSlipDocument ||
+    currentWorker?.verificationDocument ||
+    (user?.workerProfile as any)?.workSlipDocument ||
+    (user?.workerProfile as any)?.verificationDocument ||
+    currentWorker?.workSlipStatus === 'uploaded' ||
+    currentWorker?.workSlipStatus === 'approved' ||
+    (user?.workerProfile as any)?.workSlipStatus === 'uploaded' ||
+    (user?.workerProfile as any)?.workSlipStatus === 'approved'
+  );
 
-  // RULE 10: Green Verified Tick ONLY when BOTH Work Slip approved AND Skill Certificate verified!
-  const isFullyVerified = isWorkSlipApproved && isSkillCertVerified;
+  const hasSkillCert = !!(
+    currentWorker?.skillCertificateDocument ||
+    (user?.workerProfile as any)?.skillCertificateDocument ||
+    currentWorker?.skillCertificateStatus === 'uploaded' ||
+    currentWorker?.skillCertificateStatus === 'verified' ||
+    (user?.workerProfile as any)?.certificateStatus === 'Verified' ||
+    (user?.workerProfile as any)?.certificateStatus === 'Uploaded' ||
+    (user?.workerProfile as any)?.skillCertificateStatus === 'uploaded' ||
+    (user?.workerProfile as any)?.skillCertificateStatus === 'verified'
+  );
+
+  // Green Verified Tick ONLY when BOTH Work Slip AND Skill Certificate are uploaded/verified
+  const isFullyVerified = hasWorkSlip && hasSkillCert;
   const adminRejectionReason = currentWorker?.rejectionReason || currentWorker?.adminRejectionReason;
 
   const primarySkillName = user?.workerProfile?.primarySkill || currentWorker?.skills?.[0] || 'Plumbing';
@@ -41,8 +59,7 @@ export default function WorkerHome() {
   const todayEarnings = MOCK_EARNINGS.slice(0, 1).reduce((s, e) => s + e.workerShare, 0);
   const weekEarnings = MOCK_EARNINGS.reduce((s, e) => s + e.workerShare, 0);
 
-  // RULE 9: Job offers delivered if Work Slip uploaded, even if Skill Certificate is pending!
-  // Filtered strictly by worker's registered profession & skills.
+  // Job offers delivered if Work Slip uploaded, even if Skill Certificate is pending
   const pendingOffers = hasWorkSlip ? jobOffers.filter(o => {
     if (o.status !== 'pending') return false;
     const offerCat = normalizeCategory(o.serviceLabel);
@@ -76,38 +93,16 @@ export default function WorkerHome() {
               </View>
             )}
           </Pressable>
-          <Badge
-            label={isFullyVerified ? `🟢 Verified ${formattedProfession}` : hasWorkSlip ? `Partially Verified (${formattedProfession})` : 'Onboarding Incomplete'}
-            variant={isFullyVerified ? 'success' : hasWorkSlip ? 'warning' : 'error'}
-          />
         </View>
       </View>
 
-      {/* Verification State Banners */}
-      {!hasWorkSlip && (
-        <Pressable style={styles.approvalNoticeBannerPending} onPress={() => router.push('/onboarding/worker' as any)}>
-          <MaterialIcons name="warning" size={22} color="#DC2626" />
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.approvalNoticeTitlePending, { color: '#B91C1C' }]}>Work Slip Required (Onboarding Incomplete)</Text>
-            <Text style={styles.approvalNoticeSubPending}>
-              Download, get stamped, and upload your signed Work Slip to complete onboarding.
-            </Text>
-          </View>
-          <MaterialIcons name="chevron-right" size={20} color="#B91C1C" />
-        </Pressable>
-      )}
-
-      {hasWorkSlip && !isSkillCertVerified && (
-        <Pressable style={[styles.approvalNoticeBannerPending, { backgroundColor: '#FEF3C7', borderColor: '#F59E0B' }]} onPress={() => router.push('/(worker)/profile' as any)}>
-          <MaterialIcons name="timer" size={22} color="#D97706" />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.approvalNoticeTitlePending}>Skill Certificate Pending (10 Days Commitment Active)</Text>
-            <Text style={styles.approvalNoticeSubPending}>
-              Your Work Slip is uploaded & active. You are receiving {formattedProfession} jobs. Upload your skill certificate within 10 days to get the Green Verified Tick.
-            </Text>
-          </View>
-          <MaterialIcons name="chevron-right" size={20} color="#B45309" />
-        </Pressable>
+      {/* Static Informational Message Banner (Plain text only, not clickable, no navigation) */}
+      {hasWorkSlip && !hasSkillCert && (
+        <View style={styles.skillCertNoticeBanner}>
+          <Text style={styles.skillCertNoticeText}>
+            Please upload your skill certificate to complete your profile verification.
+          </Text>
+        </View>
       )}
 
       {verifState === 'UNDER_REVIEW' && (
@@ -391,6 +386,21 @@ const styles = StyleSheet.create({
   notifTitle: { fontSize: Typography.xs, fontWeight: Typography.bold, color: Colors.textPrimary },
   notifBody: { fontSize: Typography.xs, color: Colors.textSecondary, marginTop: 2, lineHeight: 16 },
   notifTime: { fontSize: 10, color: Colors.textTertiary, marginTop: 4 },
+  skillCertNoticeBanner: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#F59E0B',
+    borderWidth: 1,
+    borderRadius: Radius.lg,
+    padding: Spacing[4],
+    marginHorizontal: Spacing[5],
+    marginBottom: Spacing[4],
+  },
+  skillCertNoticeText: {
+    fontSize: Typography.sm,
+    fontWeight: Typography.medium,
+    color: '#92400E',
+    lineHeight: 20,
+  },
   approvalNoticeBannerPending: {
     flexDirection: 'row',
     alignItems: 'flex-start',

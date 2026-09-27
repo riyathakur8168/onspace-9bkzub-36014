@@ -26,6 +26,18 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # customer, worker, admin
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    aadhaar_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    aadhaar_number_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    aadhaar_verification_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    aadhaar_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    email_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -54,4 +66,7 @@ class User(Base):
     )
     audit_logs: Mapped[List["AuditLog"]] = relationship(
         "AuditLog", back_populates="actor", foreign_keys="AuditLog.actor_id"
+    )
+    documents: Mapped[List["Document"]] = relationship(
+        "Document", back_populates="user", cascade="all, delete-orphan"
     )
