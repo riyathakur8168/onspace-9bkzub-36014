@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.security import (
     hash_password,
     verify_password,
@@ -13,6 +14,8 @@ from app.schemas.auth import UserRegister, UserLogin, Token
 from app.schemas.user import UserResponse
 from app.api.deps import get_current_user
 from app.services.verification_service import update_worker_verification_state
+
+SECRET_KEY = settings.SECRET_KEY
 
 router = APIRouter(
     prefix="/api/auth",
