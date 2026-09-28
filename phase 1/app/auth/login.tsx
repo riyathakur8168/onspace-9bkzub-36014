@@ -304,7 +304,7 @@ export default function LoginScreen() {
 
     setFormSuccess('Login successful! Redirecting...');
     setTimeout(() => {
-      const userRole = res.role || selectedRole;
+      const userRole = ('role' in res ? res.role : undefined) || selectedRole;
       if (userRole === ROLES.ADMIN) {
         router.replace('/(admin)/workers');
       } else if (userRole === ROLES.WORKER) {
@@ -973,11 +973,11 @@ const styles = StyleSheet.create({
   },
   roleOptionCustomerActive: {
     borderColor: Colors.customerColor,
-    backgroundColor: Colors.customerLight + '30',
+    backgroundColor: '#ECFDF5',
   },
   roleOptionWorkerActive: {
     borderColor: Colors.workerColor,
-    backgroundColor: Colors.workerLight + '30',
+    backgroundColor: '#FFFBEB',
   },
   roleOptionTextWrap: {
     flex: 1,

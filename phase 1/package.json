@@ -3,7 +3,7 @@
   "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
-    "start": "expo start",
+    "start": "expo start --port 8081",
     "start:lan": "expo start --lan",
     "start:clear": "expo start -c",
     "start:tunnel": "expo start --tunnel",

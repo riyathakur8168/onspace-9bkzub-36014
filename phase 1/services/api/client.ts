@@ -27,11 +27,17 @@ export async function apiRequest<T = any>(
     headers['Authorization'] = `Bearer ${token}`;
   }
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 7000);
+  const signal = options.signal || controller.signal;
+
   try {
     const response = await fetch(url, {
       ...options,
       headers,
+      signal,
     });
+    clearTimeout(timeoutId);
 
     const status = response.status;
     let responseData: any;
@@ -55,12 +61,13 @@ export async function apiRequest<T = any>(
 
     return { status, data: responseData as T };
   } catch (error: any) {
+    clearTimeout(timeoutId);
     if (__DEV__) {
       console.log(`[API Client] Network request to ${url} failed:`, error?.message || error);
     }
     return {
       status: 0,
-      error: error?.message || 'Network connection failed. Please check backend status.',
+      error: error?.name === 'AbortError' ? 'Request timed out. Please try again.' : (error?.message || 'Network connection failed. Please check backend status.'),
     };
   }
 }

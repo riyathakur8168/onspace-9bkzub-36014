@@ -139,7 +139,8 @@ interface AppContextType {
     address?: string,
     city?: string,
     pincode?: string,
-    phoneVerified?: boolean
+    sessionId?: string,
+    aadhaarNumber?: string
   ) => Promise<{ success: boolean; error?: string }>;
   loginWithPassword: (email: string, pass: string) => Promise<{ success: boolean; user?: User; role?: Role; error?: string }>;
   sendOTP: (emailOrPhone?: string) => Promise<{ success: boolean; code: string; error?: string }>;
@@ -306,11 +307,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!token) return;
 
       const meRes = await authApi.getMe();
-      if (!meRes.data) {
+      if (meRes.status === 401 || meRes.status === 403) {
+        // Only clear session if token is explicitly rejected (unauthorized)
         await removeStoredToken();
         setUser(null);
         setRole(null);
         await AsyncStorage.removeItem(STORAGE_KEY);
+        return;
+      }
+
+      if (!meRes.data) {
+        // Network connection error or timeout - keep local cached session, do NOT log user out
         return;
       }
 
@@ -354,7 +361,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       // Map Worker Offers if user is a Worker
       if (bUser.role === 'worker' && roleDataRes.data && Array.isArray(roleDataRes.data)) {
-        const mappedOffers: JobOffer[] = roleDataRes.data.map(o => ({
+        const workerOffers = roleDataRes.data as BackendWorkerOffer[];
+        const mappedOffers: JobOffer[] = workerOffers.map(o => ({
           id: String(o.id),
           requestId: String(o.request_id),
           serviceLabel: o.request?.service_label || 'Service Job',
@@ -374,7 +382,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }));
         setJobOffers(mappedOffers);
       } else if (bUser.role === 'customer' && roleDataRes.data && Array.isArray(roleDataRes.data)) {
-        const mappedReqs: ServiceRequest[] = roleDataRes.data.map(r => ({
+        const customerRequests = roleDataRes.data as BackendServiceRequest[];
+        const mappedReqs: ServiceRequest[] = customerRequests.map(r => ({
           id: String(r.id),
           customerId: String(r.customer_id),
           serviceId: String(r.service_id || 'plumbing'),
@@ -399,8 +408,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     async function loadSession() {
       try {
-        const token = await getStoredToken();
-        const cachedUserJson = await AsyncStorage.getItem(STORAGE_KEY);
+        const [token, cachedUserJson] = await Promise.all([
+          getStoredToken(),
+          AsyncStorage.getItem(STORAGE_KEY),
+        ]);
 
         if (cachedUserJson) {
           try {
@@ -412,7 +423,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        // Hydrate UI immediately so main screen renders in <100ms
+        // Hydrate UI immediately so main screen renders in <50ms
         setIsHydrated(true);
         SplashScreen.hideAsync().catch(() => {});
 

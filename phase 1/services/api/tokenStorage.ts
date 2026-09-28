@@ -4,7 +4,12 @@ import { Platform } from 'react-native';
 
 const TOKEN_KEY = 'oneplace_jwt_access_token';
 
+let inMemoryToken: string | null = null;
+let isTokenHydrated = false;
+
 export async function setStoredToken(token: string): Promise<void> {
+  inMemoryToken = token;
+  isTokenHydrated = true;
   try {
     if (Platform.OS !== 'web') {
       await SecureStore.setItemAsync(TOKEN_KEY, token);
@@ -17,19 +22,34 @@ export async function setStoredToken(token: string): Promise<void> {
 }
 
 export async function getStoredToken(): Promise<string | null> {
+  if (isTokenHydrated) {
+    return inMemoryToken;
+  }
   try {
     if (Platform.OS !== 'web') {
       const token = await SecureStore.getItemAsync(TOKEN_KEY);
-      if (token) return token;
+      if (token) {
+        inMemoryToken = token;
+        isTokenHydrated = true;
+        return token;
+      }
     }
-    return await AsyncStorage.getItem(TOKEN_KEY);
+    const token = await AsyncStorage.getItem(TOKEN_KEY);
+    inMemoryToken = token;
+    isTokenHydrated = true;
+    return token;
   } catch (error) {
     console.warn('Error reading auth token from secure storage:', error);
-    return await AsyncStorage.getItem(TOKEN_KEY);
+    const token = await AsyncStorage.getItem(TOKEN_KEY);
+    inMemoryToken = token;
+    isTokenHydrated = true;
+    return token;
   }
 }
 
 export async function removeStoredToken(): Promise<void> {
+  inMemoryToken = null;
+  isTokenHydrated = true;
   try {
     if (Platform.OS !== 'web') {
       await SecureStore.deleteItemAsync(TOKEN_KEY);
@@ -40,3 +60,4 @@ export async function removeStoredToken(): Promise<void> {
     await AsyncStorage.removeItem(TOKEN_KEY);
   }
 }
+
